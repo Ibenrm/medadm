@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\DB;
 
 class BroadcastController extends Controller
 {
@@ -67,6 +68,9 @@ class BroadcastController extends Controller
                 $batchSize = 50;
                 $batchData = [];
 
+                // 🔹 Kumpulkan semua kategori unik
+                $allCategories = [];
+
                 foreach ($rows as $idx => $row) {
                     if ($idx === 0) continue; // skip header
 
@@ -76,18 +80,22 @@ class BroadcastController extends Controller
                         $dateTime = \DateTime::createFromFormat('d/m/Y', $tanggal_raw)
                             ?: \DateTime::createFromFormat('m/d/Y', $tanggal_raw);
                         if ($dateTime) {
-                            $tanggal = $dateTime->format('Y-m-d H:i:s'); // format API
+                            $tanggal = $dateTime->format('Y-m-d H:i:s');
                         }
                     }
 
-                    // Lewatkan baris kosong
                     if (empty($row[2]) && empty($row[5]) && empty($row[8])) {
                         continue;
                     }
 
+                    $kategori = trim($row[2] ?? '');
+                    if ($kategori) {
+                        $allCategories[] = $kategori;
+                    }
+
                     $batchData[] = [
                         'tanggal' => $tanggal,
-                        'kegiatan' => $row[2] ?? '',
+                        'kegiatan' => $kategori,
                         'universitas' => $row[3] ?? '',
                         'semester' => $row[4] ?? '',
                         'nama_lengkap' => $row[5] ?? '',
@@ -110,7 +118,6 @@ class BroadcastController extends Controller
                     }
                 }
 
-                // Kirim sisa batch terakhir
                 if (!empty($batchData)) {
                     [$inserted, $failed, $debugData] = $this->sendBatch(
                         $batchData,
@@ -122,7 +129,11 @@ class BroadcastController extends Controller
                     );
                 }
 
-                $msg = "Selesai: $inserted baris berhasil, $failed baris gagal. Lihat debug di bawah.";
+                // 🔹 Insert kategori baru ke template_broadcast
+                $uniqueCategories = array_unique($allCategories);
+                $this->insertTemplateCategories($uniqueCategories);
+
+                $msg = "Selesai: $inserted baris berhasil, $failed baris gagal. Kategori baru otomatis dimasukkan.";
 
             } catch (\Exception $e) {
                 $msg = "Error membaca file: " . $e->getMessage();
@@ -131,7 +142,6 @@ class BroadcastController extends Controller
             $msg = "Tidak ada file yang diunggah.";
         }
 
-        // ✅ Redirect biar refresh tidak kirim ulang data
         return redirect()
             ->route('dashboards.ea.broadcast.insert')
             ->with([
@@ -154,12 +164,10 @@ class BroadcastController extends Controller
             $responseData = $response->json();
 
             if ($statusCode === 200) {
-                // Hitung berhasil meski API tidak balas jumlah pasti
                 if (isset($responseData['inserted']) || isset($responseData['failed'])) {
                     $inserted += $responseData['inserted'] ?? 0;
                     $failed += $responseData['failed'] ?? 0;
                 } else {
-                    // Anggap semua berhasil kalau status 200
                     $inserted += count($batchData);
                 }
 
@@ -167,7 +175,7 @@ class BroadcastController extends Controller
                     $debugData[] = [
                         'data_sent' => $data,
                         'status' => 'success',
-                        'note' => $responseData['message'] ?? 'Berhasil dikirim (tanpa detail dari API).'
+                        'note' => $responseData['message'] ?? 'Berhasil dikirim.'
                     ];
                 }
             } else {
@@ -192,5 +200,42 @@ class BroadcastController extends Controller
         }
 
         return [$inserted, $failed, $debugData];
+    }
+
+    /**
+     * 🔹 Insert kategori baru ke template_broadcast
+     */
+    private function insertTemplateCategories(array $categories)
+    {
+        if (empty($categories)) return;
+
+        $existing = DB::table('template_broadcast')
+            ->pluck('name_category')
+            ->map('strtolower')
+            ->toArray();
+
+        $now = now();
+        $images = [
+            'https://via.placeholder.com/600x300.png?text=Broadcast+1',
+            'https://via.placeholder.com/600x300.png?text=Broadcast+2',
+            'https://via.placeholder.com/600x300.png?text=Broadcast+3'
+        ];
+        $descriptions = [
+            'Pesan template default, silakan ubah sesuai kebutuhan.',
+            'Template auto-generated untuk kategori baru.',
+            'Silakan edit deskripsi ini secara manual.'
+        ];
+
+        foreach ($categories as $cat) {
+            if (!in_array(strtolower($cat), $existing)) {
+                DB::table('template_broadcast')->insert([
+                    'name_category' => $cat,
+                    'link_image' => $images[array_rand($images)],
+                    'description' => $descriptions[array_rand($descriptions)],
+                    'created_at' => $now,
+                    'update_at' => $now
+                ]);
+            }
+        }
     }
 }

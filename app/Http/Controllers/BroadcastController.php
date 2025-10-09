@@ -31,6 +31,7 @@ class BroadcastController extends Controller
     public function postInsert(Request $request)
     {
         try {
+            // Validasi file upload
             $request->validate([
                 'excel_file' => 'required|mimes:xlsx,xls|max:4096',
             ]);
@@ -39,35 +40,48 @@ class BroadcastController extends Controller
             $spreadsheet = IOFactory::load($file->getPathname());
             $sheet = $spreadsheet->getActiveSheet();
             $rows = $sheet->toArray(null, true, true, true);
-            array_shift($rows); // skip header
+
+            // Hapus header
+            array_shift($rows);
 
             $allData = [];
             $categories = [];
-            foreach ($rows as $row) {
-                $tanggal = trim($row['A'] ?? '');
-                $kegiatan = trim($row['B'] ?? '');
-                $universitas = trim($row['C'] ?? '');
-                $semester = trim($row['D'] ?? '');
-                $nama_lengkap = trim($row['E'] ?? '');
-                $nomor_hp = trim($row['F'] ?? '');
 
-                if (!$tanggal || !$kegiatan || !$universitas || !$semester || !$nama_lengkap || !$nomor_hp) {
+            foreach ($rows as $row) {
+                $tanggal      = trim($row['A'] ?? '');
+                $kegiatan     = trim($row['B'] ?? '');
+                $universitas  = trim($row['C'] ?? '');
+                $semester     = trim($row['D'] ?? '');
+                $nama_lengkap = trim($row['E'] ?? '');
+                $nomor_hp     = trim($row['F'] ?? '');
+
+                // Lewatkan baris kosong
+                if (!$tanggal && !$kegiatan && !$universitas && !$nama_lengkap && !$nomor_hp) {
                     continue;
                 }
 
+                // Validasi ringan
+                if (!preg_match('/^\d{9,15}$/', $nomor_hp)) {
+                    continue; // skip nomor tidak valid
+                }
+                if (strlen($nama_lengkap) > 100) $nama_lengkap = substr($nama_lengkap, 0, 100);
+                if (strlen($kegiatan) > 100) $kegiatan = substr($kegiatan, 0, 100);
+
                 $allData[] = [
-                    'tanggal' => $tanggal,
-                    'kegiatan' => $kegiatan,
-                    'universitas' => $universitas,
-                    'semester' => $semester,
-                    'nama_lengkap' => $nama_lengkap,
-                    'nomor_hp' => $nomor_hp,
-                    'bc_1' => 0,
-                    'bc_2' => 0,
-                    'bc_3' => 0
+                    'tanggal'       => $tanggal,
+                    'kegiatan'      => $kegiatan,
+                    'universitas'   => $universitas,
+                    'semester'      => $semester,
+                    'nama_lengkap'  => $nama_lengkap,
+                    'nomor_hp'      => $nomor_hp,
+                    'bc_1'          => 0,
+                    'bc_2'          => 0,
+                    'bc_3'          => 0,
                 ];
 
-                $categories[] = $kegiatan;
+                if ($kegiatan) {
+                    $categories[] = $kegiatan;
+                }
             }
 
             if (empty($allData)) {
@@ -85,43 +99,45 @@ class BroadcastController extends Controller
             $failed = 0;
             $debugData = [];
 
-            // === Kirim data ke API per batch 50 ===
+            // === Kirim data ke API per batch (50 data per request) ===
             $batches = array_chunk($allData, $batchSize);
             foreach ($batches as $batchIndex => $batchData) {
                 try {
                     $response = Http::withHeaders([
                         'Content-Type' => 'application/json',
                         'token' => "Bearer $token",
-                        'X-Action' => 'insert_batch'
+                        'X-Action' => 'insert_batch',
                     ])->withOptions(['verify' => $verify])
                       ->post($apiUrl, $batchData);
 
                     $statusCode = $response->status();
                     $responseData = $response->json();
 
-                    if ($statusCode === 200) {
+                    if ($statusCode === 200 && isset($responseData['status']) && $responseData['status'] === 'success') {
                         $inserted += count($batchData);
                         $debugData[] = [
                             'batch' => $batchIndex + 1,
                             'count' => count($batchData),
                             'status' => 'success',
-                            'api_response' => $responseData
+                            'response' => $responseData,
                         ];
                     } else {
                         $failed += count($batchData);
                         $debugData[] = [
                             'batch' => $batchIndex + 1,
+                            'count' => count($batchData),
                             'status' => 'failed',
                             'http_status' => $statusCode,
-                            'response' => $responseData
+                            'response' => $responseData,
                         ];
                     }
                 } catch (\Exception $e) {
                     $failed += count($batchData);
                     $debugData[] = [
                         'batch' => $batchIndex + 1,
+                        'count' => count($batchData),
                         'status' => 'error',
-                        'error' => $e->getMessage()
+                        'error' => $e->getMessage(),
                     ];
                 }
             }
@@ -130,35 +146,45 @@ class BroadcastController extends Controller
             $uniqueCategories = array_unique($categories);
             foreach ($uniqueCategories as $cat) {
                 try {
-                    Http::withHeaders([
+                    $payload = [
+                        'name_category' => $cat,
+                        'description'   => 'Template auto untuk kategori ' . $cat,
+                        'link_image'    => 'https://picsum.photos/400?random=' . rand(1000, 9999),
+                    ];
+
+                    $res = Http::withHeaders([
                         'Content-Type' => 'application/json',
                         'token' => "Bearer $token",
-                        'X-Action' => 'insertbc'
+                        'X-Action' => 'insertbc',
                     ])->withOptions(['verify' => $verify])
-                      ->post($apiUrl, [
-                          'name_category' => $cat,
-                          'description' => 'Template auto untuk kategori ' . $cat,
-                          'link_image' => 'https://picsum.photos/400?random=' . rand(1000, 9999)
-                      ]);
+                      ->post($apiUrl, $payload);
+
+                    $debugData[] = [
+                        'category' => $cat,
+                        'status'   => $res->status() === 200 ? 'insertbc_success' : 'insertbc_failed',
+                        'response' => $res->json(),
+                    ];
                 } catch (\Exception $e) {
                     $debugData[] = [
                         'category' => $cat,
-                        'status' => 'failed_insertbc',
-                        'error' => $e->getMessage()
+                        'status'   => 'insertbc_error',
+                        'error'    => $e->getMessage(),
                     ];
                 }
             }
 
+            // === Return hasil ===
             return back()->with([
-                'msg' => "✅ Proses selesai. {$inserted} baris berhasil, {$failed} gagal.",
-                'msg_type' => 'success',
-                'debugData' => $debugData
+                'msg'       => "✅ Selesai. {$inserted} data berhasil dikirim, {$failed} gagal.",
+                'msg_type'  => 'success',
+                'debugData' => $debugData,
             ]);
+
         } catch (\Exception $e) {
             Log::error('Broadcast Insert Error: ' . $e->getMessage());
             return back()->with([
                 'msg' => '❌ Terjadi kesalahan: ' . $e->getMessage(),
-                'msg_type' => 'error'
+                'msg_type' => 'error',
             ]);
         }
     }

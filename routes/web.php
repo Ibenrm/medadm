@@ -33,18 +33,13 @@ Route::post('/logout', function () {
     return redirect()->route('login');
 })->name('logout');
 
-// =======================
-// 📊 DASHBOARD (Protected)
-// =======================
+
 Route::middleware('auth.session')->group(function () {
 
     // === EA Dashboard ===
     Route::get('/dashboard/ea', [AuthController::class, 'dashboardEA'])->name('dashboard.ea');
 
-    // =========================
-    // 📢 BROADCAST MANAGEMENT
-    // =========================
-    Route::prefix('dashboards/ea/broadcast')->group(function () {
+    Route::prefix('/dashboards/ea/broadcast')->group(function () {
 
         // Daftar broadcast
         Route::get('/list', [BroadcastController::class, 'list'])->name('dashboards.ea.broadcast.list');
@@ -62,14 +57,14 @@ Route::middleware('auth.session')->group(function () {
     // =========================
     // 👥 COMMUNITY MANAGEMENT
     // =========================
-    Route::prefix('dashboards/ea/community')->group(function () {
+    Route::prefix('/dashboards/ea/community')->group(function () {
         Route::get('/dashboard', [CommunityController::class, 'dashboard'])->name('dashboards.ea.community.dashboard');
     });
 
     // =========================
     // 🌟 GOOGLE REVIEW
     // =========================
-    Route::prefix('dashboards/ea/google-review')->group(function () {
+    Route::prefix('/dashboards/ea/google-review')->group(function () {
         Route::get('/dashboard', [GoogleReviewController::class, 'dashboard'])->name('dashboards.ea.google-review.dashboard');
     });
 });

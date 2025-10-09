@@ -1,0 +1,65 @@
+/* Navbar umum untuk EA dashboard */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+.navbar {
+    display: flex;
+    width: 100%;
+    max-width: 100%;
+    align-items: center;
+    justify-content: flex-start;
+    background: #193C76;
+    padding: 10px 20px;
+    flex-wrap: wrap;
+    color: #fff;
+    font-family: Arial, sans-serif;
+    box-sizing: border-box;
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    transition: background 0.3s ease;
+}
+
+.navbar .logo {
+    font-weight: bold;
+    font-size: 20px;
+    margin-right: 20px;
+    flex-shrink: 0;
+}
+
+.navbar a {
+    color: #fff;
+    padding: 10px 18px;
+    text-decoration: none;
+    margin: 2px;
+    border-radius: 5px;
+    transition: background 0.3s ease, transform 0.2s ease;
+}
+
+.navbar a:hover {
+    background: #dbc714;
+    transform: scale(1.05);
+}
+
+.navbar a.active {
+    background: #0f2a50;
+}
+
+.navbar a.logout {
+    margin-left: auto;
+    background: #c00;
+}
+
+@media (max-width: 768px) {
+    .navbar {
+        justify-content: center;
+    }
+
+    .navbar a, .navbar a.logout {
+        flex: 1 1 100%;
+        text-align: center;
+        margin: 5px 0;
+    }
+}

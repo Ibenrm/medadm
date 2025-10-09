@@ -3,98 +3,162 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use PhpOffice\PhpSpreadsheet\IOFactory;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Str;
 
 class BroadcastController extends Controller
 {
-    private $apiUrl = 'https://medtools.id/api/broadcast/';
-    private $apiToken;
-
-    public function __construct()
+    /**
+     * Menampilkan halaman upload Excel (opsional)
+     */
+    public function index()
     {
-        $this->apiToken = env('API_SECRET_TOKEN'); // pastikan ada di .env
+        return view('dashboards.ea.broadcast.insert', [
+            'msg' => session('msg', ''),
+            'debugData' => session('debugData', []),
+        ]);
     }
 
+    /**
+     * Proses upload dan insert data broadcast via API (insert_batch)
+     */
     public function insert(Request $request)
     {
-        try {
-            // ✅ Validasi input
-            $validated = $request->validate([
-                'tanggal' => 'required|string',
-                'kegiatan' => 'required|string|max:255',
-                'universitas' => 'required|string|max:255',
-                'semester' => 'required|string|max:50',
-                'nama_lengkap' => 'required|string|max:255',
-                'nomor_hp' => 'required|string|max:20',
+        $msg = '';
+        $debugData = [];
+
+        if (!$request->hasFile('excel_file')) {
+            return redirect()->back()->with([
+                'msg' => 'Tidak ada file yang diunggah.',
+                'debugData' => [],
             ]);
+        }
 
-            // ✅ Kirim data ke API broadcastwhatsapp
-            $response = Http::withHeaders([
-                'Content-Type' => 'application/json',
-                'token' => 'Bearer ' . $this->apiToken,
-                'X-Action' => 'insert',
-            ])->post($this->apiUrl, $validated);
+        try {
+            $file = $request->file('excel_file');
+            $spreadsheet = IOFactory::load($file->getPathname());
+            $sheet = $spreadsheet->getActiveSheet();
+            $rows = $sheet->toArray();
 
-            if (!$response->successful()) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Gagal insert ke broadcastwhatsapp',
-                    'error' => $response->body(),
-                ], 500);
-            }
+            $token = env('API_SECRET_TOKEN');
+            $verify = base_path('cacert.pem');
+            if (!file_exists($verify)) $verify = false;
 
-            // ✅ Ambil semua kategori yang sudah ada di template_broadcast
-            $getCategory = Http::withHeaders([
-                'Content-Type' => 'application/json',
-                'token' => 'Bearer ' . $this->apiToken,
-                'X-Action' => 'getbc',
-            ])->get($this->apiUrl);
+            $batchData = [];
+            $categories = [];
 
-            $existingCategories = collect($getCategory->json()['data'] ?? [])->pluck('name_category')->toArray();
+            foreach ($rows as $idx => $row) {
+                if ($idx === 0) continue; // skip header
 
-            // ✅ Cek apakah kategori baru sudah ada
-            if (!in_array($validated['kegiatan'], $existingCategories)) {
-                // Insert kategori baru ke template_broadcast
-                $randomImage = "https://picsum.photos/seed/" . Str::random(8) . "/600/400";
-                $randomDescription = "Template otomatis untuk kategori " . $validated['kegiatan'];
+                $tanggal_raw = trim($row[1] ?? '');
+                $tanggal = $tanggal_raw;
+                if ($tanggal_raw) {
+                    $dateTime = \DateTime::createFromFormat('d/m/Y', $tanggal_raw)
+                        ?: \DateTime::createFromFormat('m/d/Y', $tanggal_raw);
+                    if ($dateTime) {
+                        $tanggal = $dateTime->format('Y-m-d H:i:s');
+                    }
+                }
 
-                $insertCategory = Http::withHeaders([
-                    'Content-Type' => 'application/json',
-                    'token' => 'Bearer ' . $this->apiToken,
-                    'X-Action' => 'insertbc',
-                ])->post($this->apiUrl, [
-                    'name_category' => $validated['kegiatan'],
-                    'link_image' => $randomImage,
-                    'description' => $randomDescription,
-                ]);
+                // Lewati baris kosong
+                if (empty($row[2]) && empty($row[5]) && empty($row[8])) continue;
 
-                if (!$insertCategory->successful()) {
-                    return response()->json([
-                        'status' => 'warning',
-                        'message' => 'Broadcast berhasil, tapi gagal menambah kategori baru',
-                        'error' => $insertCategory->body(),
-                    ], 200);
+                $batchData[] = [
+                    'tanggal' => $tanggal,
+                    'kegiatan' => trim($row[2] ?? ''),
+                    'universitas' => trim($row[3] ?? ''),
+                    'semester' => trim($row[4] ?? ''),
+                    'nama_lengkap' => trim($row[5] ?? ''),
+                    'nomor_hp' => trim($row[8] ?? ''),
+                    'bc_1' => 0,
+                    'bc_2' => 0,
+                    'bc_3' => 0,
+                ];
+
+                // simpan kategori unik
+                $kategori = trim($row[2] ?? '');
+                if ($kategori !== '') {
+                    $categories[$kategori] = true;
                 }
             }
 
-            return response()->json([
-                'status' => 'success',
-                'message' => 'Data broadcast berhasil ditambahkan dan kategori diperbarui',
-            ]);
+            if (empty($batchData)) {
+                return redirect()->back()->with([
+                    'msg' => 'Tidak ada data valid di file Excel.',
+                    'debugData' => [],
+                ]);
+            }
 
-        } catch (\Illuminate\Validation\ValidationException $e) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Validasi gagal',
-                'errors' => $e->errors(),
-            ], 422);
+            // === Kirim batch data ke API ===
+            $response = Http::withHeaders([
+                'Content-Type' => 'application/json',
+                'token' => "Bearer $token",
+                'X-Action' => 'insert_batch',
+            ])->withOptions(['verify' => $verify])
+              ->post('https://medtools.id/api/broadcast/', $batchData);
+
+            $responseData = $response->json();
+            $debugData['insert_batch'] = $responseData;
+
+            // === Ambil daftar kategori di template_broadcast untuk cek duplikasi ===
+            $check = Http::withHeaders([
+                'token' => "Bearer $token",
+                'X-Action' => 'getbc',
+            ])->withOptions(['verify' => $verify])
+              ->post('https://medtools.id/api/broadcast/');
+
+            $existingCategories = [];
+            if ($check->successful()) {
+                $dataBC = $check->json()['data'] ?? [];
+                foreach ($dataBC as $bc) {
+                    $existingCategories[] = strtolower(trim($bc['name_category']));
+                }
+            }
+
+            // === Insert kategori baru ke template_broadcast ===
+            $randomImages = [
+                'https://picsum.photos/400?random=1',
+                'https://picsum.photos/400?random=2',
+                'https://picsum.photos/400?random=3',
+                'https://picsum.photos/400?random=4',
+            ];
+            $randomDesc = [
+                'Template otomatis dibuat dari import broadcast baru.',
+                'Template kategori ini akan diperbarui secara manual nanti.',
+                'Auto-generated template dari file Excel.',
+                'Template sementara untuk kategori baru.',
+            ];
+
+            foreach (array_keys($categories) as $cat) {
+                if (!in_array(strtolower($cat), $existingCategories)) {
+                    $insertTemplate = [
+                        'name_category' => $cat,
+                        'link_image' => $randomImages[array_rand($randomImages)],
+                        'description' => $randomDesc[array_rand($randomDesc)],
+                    ];
+
+                    $resInsertBC = Http::withHeaders([
+                        'Content-Type' => 'application/json',
+                        'token' => "Bearer $token",
+                        'X-Action' => 'insertbc',
+                    ])->withOptions(['verify' => $verify])
+                      ->post('https://medtools.id/api/broadcast/', $insertTemplate);
+
+                    $debugData['insertbc'][] = [
+                        'category' => $cat,
+                        'response' => $resInsertBC->json(),
+                    ];
+                }
+            }
+
+            $msg = "Berhasil kirim " . count($batchData) . " data ke API (insert_batch).";
 
         } catch (\Exception $e) {
-            return response()->json([
-                'status' => 'error',
-                'message' => $e->getMessage(),
-            ], 500);
+            $msg = "Error membaca file: " . $e->getMessage();
         }
+
+        return redirect()
+            ->route('dashboards.ea.broadcast.insert')
+            ->with(['msg' => $msg, 'debugData' => $debugData]);
     }
 }

@@ -3,189 +3,217 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 use PhpOffice\PhpSpreadsheet\IOFactory;
+use Illuminate\Support\Facades\Http;
 
 class BroadcastController extends Controller
 {
-    /**
-     * Halaman list broadcast
-     */
     public function list()
     {
         return view('dashboards.ea.broadcast.list');
     }
 
-    /**
-     * Halaman upload Excel
-     */
-    public function showInsert()
+    public function getBroadcast(Request $request)
     {
-        return view('dashboards.ea.broadcast.insert');
+        $token = env('API_SECRET_TOKEN');
+        if (!$token) {
+            return response()->json([]);
+        }
+
+        $cacertPath = base_path('cacert.pem');
+        $verify = file_exists($cacertPath) ? $cacertPath : false;
+
+        try {
+            $response = Http::withHeaders([
+                'Content-Type' => 'application/json',
+                'token' => "Bearer $token",
+                'X-Action' => 'get',
+            ])->withOptions(['verify' => $verify])
+              ->post('https://medtools.id/api/broadcast/', []);
+
+            $data = $response->json();
+            return response()->json($data['data'] ?? $data ?? []);
+        } catch (\Exception $e) {
+            return response()->json([]);
+        }
     }
 
-    /**
-     * Upload Excel dan kirim batch ke API
-     */
+    public function showInsert()
+    {
+        return view('dashboards.ea.broadcast.insert', [
+            'msg' => session('msg', ''),
+            'debugData' => session('debugData', [])
+        ]);
+    }
+
     public function postInsert(Request $request)
     {
-        try {
-            // Validasi file upload
-            $request->validate([
-                'excel_file' => 'required|mimes:xlsx,xls|max:4096',
-            ]);
+        $msg = '';
+        $debugData = [];
 
+        if ($request->hasFile('excel_file')) {
             $file = $request->file('excel_file');
-            $spreadsheet = IOFactory::load($file->getPathname());
-            $sheet = $spreadsheet->getActiveSheet();
-            $rows = $sheet->toArray(null, true, true, true);
-
-            // Hapus header
-            array_shift($rows);
-
-            $allData = [];
-            $categories = [];
-
-            foreach ($rows as $row) {
-                $tanggal      = trim($row['A'] ?? '');
-                $kegiatan     = trim($row['B'] ?? '');
-                $universitas  = trim($row['C'] ?? '');
-                $semester     = trim($row['D'] ?? '');
-                $nama_lengkap = trim($row['E'] ?? '');
-                $nomor_hp     = trim($row['F'] ?? '');
-
-                // Lewatkan baris kosong
-                if (!$tanggal && !$kegiatan && !$universitas && !$nama_lengkap && !$nomor_hp) {
-                    continue;
-                }
-
-                // Validasi ringan
-                if (!preg_match('/^\d{9,15}$/', $nomor_hp)) {
-                    continue; // skip nomor tidak valid
-                }
-                if (strlen($nama_lengkap) > 100) $nama_lengkap = substr($nama_lengkap, 0, 100);
-                if (strlen($kegiatan) > 100) $kegiatan = substr($kegiatan, 0, 100);
-
-                $allData[] = [
-                    'tanggal'       => $tanggal,
-                    'kegiatan'      => $kegiatan,
-                    'universitas'   => $universitas,
-                    'semester'      => $semester,
-                    'nama_lengkap'  => $nama_lengkap,
-                    'nomor_hp'      => $nomor_hp,
-                    'bc_1'          => 0,
-                    'bc_2'          => 0,
-                    'bc_3'          => 0,
-                ];
-
-                if ($kegiatan) {
-                    $categories[] = $kegiatan;
-                }
-            }
-
-            if (empty($allData)) {
-                return back()->with([
-                    'msg' => '❌ Tidak ada data valid ditemukan di Excel.',
-                    'msg_type' => 'error'
-                ]);
-            }
-
-            $apiUrl = 'https://medtools.id/api/broadcast/';
             $token = env('API_SECRET_TOKEN');
-            $verify = false;
-            $batchSize = 50;
-            $inserted = 0;
-            $failed = 0;
-            $debugData = [];
+            $cacertPath = base_path('cacert.pem');
+            $verify = file_exists($cacertPath) ? $cacertPath : false;
 
-            // === Kirim data ke API per batch (50 data per request) ===
-            $batches = array_chunk($allData, $batchSize);
-            foreach ($batches as $batchIndex => $batchData) {
-                try {
-                    $response = Http::withHeaders([
-                        'Content-Type' => 'application/json',
-                        'token' => "Bearer $token",
-                        'X-Action' => 'insert_batch',
-                    ])->withOptions(['verify' => $verify])
-                      ->post($apiUrl, $batchData);
+            try {
+                $spreadsheet = IOFactory::load($file->getPathname());
+                $sheet = $spreadsheet->getActiveSheet();
+                $rows = $sheet->toArray();
 
-                    $statusCode = $response->status();
-                    $responseData = $response->json();
+                $inserted = 0;
+                $failed = 0;
+                $batchSize = 50;
+                $batchData = [];
+                $categories = []; // buat simpan kegiatan unik
 
-                    if ($statusCode === 200 && isset($responseData['status']) && $responseData['status'] === 'success') {
-                        $inserted += count($batchData);
+                foreach ($rows as $idx => $row) {
+                    if ($idx === 0) continue; // skip header
+
+                    $tanggal_raw = $row[1] ?? '';
+                    $tanggal = $tanggal_raw;
+                    if ($tanggal_raw) {
+                        $dateTime = \DateTime::createFromFormat('d/m/Y', $tanggal_raw)
+                            ?: \DateTime::createFromFormat('m/d/Y', $tanggal_raw);
+                        if ($dateTime) {
+                            $tanggal = $dateTime->format('Y-m-d H:i:s'); // format API
+                        }
+                    }
+
+                    // Lewatkan baris kosong
+                    if (empty($row[2]) && empty($row[5]) && empty($row[8])) {
+                        continue;
+                    }
+
+                    $kegiatan = $row[2] ?? '';
+                    if (!empty($kegiatan)) {
+                        $categories[] = $kegiatan;
+                    }
+
+                    $batchData[] = [
+                        'tanggal' => $tanggal,
+                        'kegiatan' => $kegiatan,
+                        'universitas' => $row[3] ?? '',
+                        'semester' => $row[4] ?? '',
+                        'nama_lengkap' => $row[5] ?? '',
+                        'nomor_hp' => trim($row[8] ?? ''),
+                        'bc_1' => 0,
+                        'bc_2' => 0,
+                        'bc_3' => 0
+                    ];
+
+                    // kirim batch per 50
+                    if (count($batchData) >= $batchSize) {
+                        [$inserted, $failed, $debugData] = $this->sendBatch(
+                            $batchData,
+                            $token,
+                            $inserted,
+                            $failed,
+                            $debugData,
+                            $verify
+                        );
+                        $batchData = [];
+                    }
+                }
+
+                // kirim sisa batch terakhir
+                if (!empty($batchData)) {
+                    [$inserted, $failed, $debugData] = $this->sendBatch(
+                        $batchData,
+                        $token,
+                        $inserted,
+                        $failed,
+                        $debugData,
+                        $verify
+                    );
+                }
+
+                // === kirim kategori unik ke template_broadcast ===
+                $uniqueCategories = array_unique($categories);
+                foreach ($uniqueCategories as $cat) {
+                    try {
+                        $response = Http::withHeaders([
+                            "Content-Type" => "application/json",
+                            "token" => "Bearer $token",
+                            "X-Action" => "insertbc"
+                        ])->withOptions(['verify' => $verify])
+                          ->post('https://medtools.id/api/broadcast/', [
+                              'name_category' => $cat,
+                              'description' => 'Template auto untuk kategori ' . $cat,
+                              'link_image' => 'https://picsum.photos/400?random=' . rand(1000, 9999)
+                          ]);
+
                         $debugData[] = [
-                            'batch' => $batchIndex + 1,
-                            'count' => count($batchData),
-                            'status' => 'success',
-                            'response' => $responseData,
+                            'category' => $cat,
+                            'status' => $response->status() === 200 ? 'success' : 'failed',
+                            'response' => $response->json()
                         ];
-                    } else {
-                        $failed += count($batchData);
+                    } catch (\Exception $e) {
                         $debugData[] = [
-                            'batch' => $batchIndex + 1,
-                            'count' => count($batchData),
+                            'category' => $cat,
                             'status' => 'failed',
-                            'http_status' => $statusCode,
-                            'response' => $responseData,
+                            'error' => $e->getMessage()
                         ];
                     }
-                } catch (\Exception $e) {
-                    $failed += count($batchData);
-                    $debugData[] = [
-                        'batch' => $batchIndex + 1,
-                        'count' => count($batchData),
-                        'status' => 'error',
-                        'error' => $e->getMessage(),
-                    ];
                 }
+
+                $msg = "✅ Selesai: $inserted baris berhasil, $failed baris gagal. Template kategori juga dibuat otomatis.";
+
+            } catch (\Exception $e) {
+                $msg = "❌ Error membaca file: " . $e->getMessage();
             }
-
-            // === Masukkan kategori unik ke template_broadcast ===
-            $uniqueCategories = array_unique($categories);
-            foreach ($uniqueCategories as $cat) {
-                try {
-                    $payload = [
-                        'name_category' => $cat,
-                        'description'   => 'Template auto untuk kategori ' . $cat,
-                        'link_image'    => 'https://picsum.photos/400?random=' . rand(1000, 9999),
-                    ];
-
-                    $res = Http::withHeaders([
-                        'Content-Type' => 'application/json',
-                        'token' => "Bearer $token",
-                        'X-Action' => 'insertbc',
-                    ])->withOptions(['verify' => $verify])
-                      ->post($apiUrl, $payload);
-
-                    $debugData[] = [
-                        'category' => $cat,
-                        'status'   => $res->status() === 200 ? 'insertbc_success' : 'insertbc_failed',
-                        'response' => $res->json(),
-                    ];
-                } catch (\Exception $e) {
-                    $debugData[] = [
-                        'category' => $cat,
-                        'status'   => 'insertbc_error',
-                        'error'    => $e->getMessage(),
-                    ];
-                }
-            }
-
-            // === Return hasil ===
-            return back()->with([
-                'msg'       => "✅ Selesai. {$inserted} data berhasil dikirim, {$failed} gagal.",
-                'msg_type'  => 'success',
-                'debugData' => $debugData,
-            ]);
-
-        } catch (\Exception $e) {
-            Log::error('Broadcast Insert Error: ' . $e->getMessage());
-            return back()->with([
-                'msg' => '❌ Terjadi kesalahan: ' . $e->getMessage(),
-                'msg_type' => 'error',
-            ]);
+        } else {
+            $msg = "❌ Tidak ada file yang diunggah.";
         }
+
+        // redirect biar gak resubmit
+        return redirect()
+            ->route('dashboards.ea.broadcast.insert')
+            ->with([
+                'msg' => $msg,
+                'debugData' => $debugData
+            ]);
+    }
+
+    private function sendBatch($batchData, $token, $inserted, $failed, $debugData, $verify)
+    {
+        try {
+            $response = Http::withHeaders([
+                "Content-Type" => "application/json",
+                "token" => "Bearer $token",
+                "X-Action" => "insert_batch"
+            ])->withOptions(['verify' => $verify])
+              ->post('https://medtools.id/api/broadcast/', $batchData);
+
+            $statusCode = $response->status();
+            $responseData = $response->json();
+
+            if ($statusCode === 200) {
+                $inserted += count($batchData);
+                foreach ($batchData as $data) {
+                    $debugData[] = [
+                        'data_sent' => $data,
+                        'status' => 'success',
+                        'note' => $responseData['message'] ?? 'OK'
+                    ];
+                }
+            } else {
+                $failed += count($batchData);
+                $debugData[] = [
+                    'batch_status' => 'failed',
+                    'http_status' => $statusCode,
+                    'response' => $responseData
+                ];
+            }
+        } catch (\Exception $e) {
+            $failed += count($batchData);
+            $debugData[] = [
+                'batch_status' => 'error',
+                'error' => $e->getMessage()
+            ];
+        }
+
+        return [$inserted, $failed, $debugData];
     }
 }

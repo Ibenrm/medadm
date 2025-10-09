@@ -66,7 +66,7 @@ class BroadcastController extends Controller
                 $failed = 0;
                 $batchSize = 50;
                 $batchData = [];
-                $categories = []; // buat simpan kegiatan unik
+                $categories = [];
 
                 foreach ($rows as $idx => $row) {
                     if ($idx === 0) continue; // skip header
@@ -77,11 +77,10 @@ class BroadcastController extends Controller
                         $dateTime = \DateTime::createFromFormat('d/m/Y', $tanggal_raw)
                             ?: \DateTime::createFromFormat('m/d/Y', $tanggal_raw);
                         if ($dateTime) {
-                            $tanggal = $dateTime->format('Y-m-d H:i:s'); // format API
+                            $tanggal = $dateTime->format('Y-m-d H:i:s');
                         }
                     }
 
-                    // Lewatkan baris kosong
                     if (empty($row[2]) && empty($row[5]) && empty($row[8])) {
                         continue;
                     }
@@ -103,7 +102,7 @@ class BroadcastController extends Controller
                         'bc_3' => 0
                     ];
 
-                    // kirim batch per 50
+                    // kirim batch per 50 data
                     if (count($batchData) >= $batchSize) {
                         [$inserted, $failed, $debugData] = $this->sendBatch(
                             $batchData,
@@ -167,7 +166,6 @@ class BroadcastController extends Controller
             $msg = "❌ Tidak ada file yang diunggah.";
         }
 
-        // redirect biar gak resubmit
         return redirect()
             ->route('dashboards.ea.broadcast.insert')
             ->with([
@@ -179,10 +177,11 @@ class BroadcastController extends Controller
     private function sendBatch($batchData, $token, $inserted, $failed, $debugData, $verify)
     {
         try {
+            // ganti insert_batch jadi insert
             $response = Http::withHeaders([
                 "Content-Type" => "application/json",
                 "token" => "Bearer $token",
-                "X-Action" => "insert_batch"
+                "X-Action" => "insert"
             ])->withOptions(['verify' => $verify])
               ->post('https://medtools.id/api/broadcast/', $batchData);
 
@@ -191,13 +190,11 @@ class BroadcastController extends Controller
 
             if ($statusCode === 200) {
                 $inserted += count($batchData);
-                foreach ($batchData as $data) {
-                    $debugData[] = [
-                        'data_sent' => $data,
-                        'status' => 'success',
-                        'note' => $responseData['message'] ?? 'OK'
-                    ];
-                }
+                $debugData[] = [
+                    'batch_status' => 'success',
+                    'count' => count($batchData),
+                    'response' => $responseData
+                ];
             } else {
                 $failed += count($batchData);
                 $debugData[] = [

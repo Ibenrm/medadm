@@ -4,16 +4,19 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use PhpOffice\PhpSpreadsheet\IOFactory;
-use Illuminate\Support\Facades\Http;
 use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\DB;
 
 class BroadcastController extends Controller
 {
+    // Halaman list broadcast
     public function list()
     {
         return view('dashboards.ea.broadcast.list');
     }
 
+    // Ambil data broadcast dari API
     public function getBroadcast(Request $request)
     {
         $token = env('API_SECRET_TOKEN');
@@ -39,6 +42,7 @@ class BroadcastController extends Controller
         }
     }
 
+    // Halaman insert upload Excel
     public function showInsert()
     {
         return view('dashboards.ea.broadcast.insert', [
@@ -47,6 +51,7 @@ class BroadcastController extends Controller
         ]);
     }
 
+    // Upload Excel + insert_batch + update template_broadcast
     public function postInsert(Request $request)
     {
         $msg = '';
@@ -68,13 +73,15 @@ class BroadcastController extends Controller
                 $batchSize = 50;
                 $batchData = [];
 
+                $allKegiatan = []; // untuk template_broadcast
+
                 foreach ($rows as $idx => $row) {
                     if ($idx === 0) continue; // skip header
 
                     $tanggal_raw = $row[1] ?? '';
                     $tanggal = '';
 
-                    // 🔹 Deteksi dan ubah format tanggal
+                    // 🔹 Deteksi format tanggal
                     if (is_numeric($tanggal_raw)) {
                         $timestamp = ExcelDate::excelToTimestamp($tanggal_raw);
                         $tanggal = date('Y-m-d', $timestamp);
@@ -104,6 +111,10 @@ class BroadcastController extends Controller
                         'bc_3' => 0
                     ];
 
+                    if (!empty($row[2])) {
+                        $allKegiatan[] = $row[2];
+                    }
+
                     // Kirim batch jika sudah 50
                     if (count($batchData) >= $batchSize) {
                         [$inserted, $failed, $debugData] = $this->sendBatch(
@@ -130,6 +141,29 @@ class BroadcastController extends Controller
                     );
                 }
 
+                // 🔹 Insert template_broadcast
+                $uniqueKegiatan = collect($allKegiatan)->unique();
+                foreach ($uniqueKegiatan as $kegiatan) {
+                    $exists = DB::table('template_broadcast')
+                        ->where('name_category', $kegiatan)
+                        ->exists();
+
+                    if (!$exists) {
+                        DB::table('template_broadcast')->insert([
+                            'name_category' => $kegiatan,
+                            'link_image' => '',
+                            'description' => '',
+                            'created_at' => now(),
+                            'update_at' => now(),
+                        ]);
+
+                        $debugData[] = [
+                            'category' => $kegiatan,
+                            'status' => 'inserted'
+                        ];
+                    }
+                }
+
                 $msg = "✅ Selesai: $inserted baris berhasil dikirim, $failed baris gagal. Cek debug di bawah.";
 
             } catch (\Exception $e) {
@@ -139,7 +173,6 @@ class BroadcastController extends Controller
             $msg = "⚠️ Tidak ada file yang diunggah.";
         }
 
-        // Redirect biar tidak re-post data saat refresh
         return redirect()
             ->route('dashboards.ea.broadcast.insert')
             ->with([
@@ -148,6 +181,7 @@ class BroadcastController extends Controller
             ]);
     }
 
+    // Helper kirim batch ke API
     private function sendBatch($batchData, $token, $inserted, $failed, $debugData, $verify)
     {
         try {

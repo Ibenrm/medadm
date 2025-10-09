@@ -14,7 +14,7 @@ class BroadcastController extends Controller
      */
     public function list()
     {
-        return view('broadcast.list');
+        return view('dashboards.ea.broadcast.list');
     }
 
     /**
@@ -22,7 +22,7 @@ class BroadcastController extends Controller
      */
     public function showInsert()
     {
-        return view('broadcast.insert');
+        return view('dashboards.ea.broadcast.insert');
     }
 
     /**

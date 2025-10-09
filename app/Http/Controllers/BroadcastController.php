@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use Illuminate\Support\Facades\Http;
+use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
 
 class BroadcastController extends Controller
 {
@@ -66,33 +67,34 @@ class BroadcastController extends Controller
                 $failed = 0;
                 $batchSize = 50;
                 $batchData = [];
-                $categories = [];
 
                 foreach ($rows as $idx => $row) {
                     if ($idx === 0) continue; // skip header
 
                     $tanggal_raw = $row[1] ?? '';
-                    $tanggal = $tanggal_raw;
-                    if ($tanggal_raw) {
+                    $tanggal = '';
+
+                    // 🔹 Deteksi dan ubah format tanggal
+                    if (is_numeric($tanggal_raw)) {
+                        $timestamp = ExcelDate::excelToTimestamp($tanggal_raw);
+                        $tanggal = date('Y-m-d', $timestamp);
+                    } else {
                         $dateTime = \DateTime::createFromFormat('d/m/Y', $tanggal_raw)
-                            ?: \DateTime::createFromFormat('m/d/Y', $tanggal_raw);
+                            ?: \DateTime::createFromFormat('m/d/Y', $tanggal_raw)
+                            ?: \DateTime::createFromFormat('Y-m-d', $tanggal_raw);
                         if ($dateTime) {
-                            $tanggal = $dateTime->format('Y-m-d H:i:s');
+                            $tanggal = $dateTime->format('Y-m-d');
                         }
                     }
 
+                    // Lewatkan baris kosong
                     if (empty($row[2]) && empty($row[5]) && empty($row[8])) {
                         continue;
                     }
 
-                    $kegiatan = $row[2] ?? '';
-                    if (!empty($kegiatan)) {
-                        $categories[] = $kegiatan;
-                    }
-
                     $batchData[] = [
                         'tanggal' => $tanggal,
-                        'kegiatan' => $kegiatan,
+                        'kegiatan' => $row[2] ?? '',
                         'universitas' => $row[3] ?? '',
                         'semester' => $row[4] ?? '',
                         'nama_lengkap' => $row[5] ?? '',
@@ -102,7 +104,7 @@ class BroadcastController extends Controller
                         'bc_3' => 0
                     ];
 
-                    // kirim batch per 50 data
+                    // Kirim batch jika sudah 50
                     if (count($batchData) >= $batchSize) {
                         [$inserted, $failed, $debugData] = $this->sendBatch(
                             $batchData,
@@ -116,7 +118,7 @@ class BroadcastController extends Controller
                     }
                 }
 
-                // kirim sisa batch terakhir
+                // Kirim sisa batch terakhir
                 if (!empty($batchData)) {
                     [$inserted, $failed, $debugData] = $this->sendBatch(
                         $batchData,
@@ -128,44 +130,16 @@ class BroadcastController extends Controller
                     );
                 }
 
-                // === kirim kategori unik ke template_broadcast ===
-                $uniqueCategories = array_unique($categories);
-                foreach ($uniqueCategories as $cat) {
-                    try {
-                        $response = Http::withHeaders([
-                            "Content-Type" => "application/json",
-                            "token" => "Bearer $token",
-                            "X-Action" => "insertbc"
-                        ])->withOptions(['verify' => $verify])
-                          ->post('https://medtools.id/api/broadcast/', [
-                              'name_category' => $cat,
-                              'description' => 'Template auto untuk kategori ' . $cat,
-                              'link_image' => 'https://picsum.photos/400?random=' . rand(1000, 9999)
-                          ]);
-
-                        $debugData[] = [
-                            'category' => $cat,
-                            'status' => $response->status() === 200 ? 'success' : 'failed',
-                            'response' => $response->json()
-                        ];
-                    } catch (\Exception $e) {
-                        $debugData[] = [
-                            'category' => $cat,
-                            'status' => 'failed',
-                            'error' => $e->getMessage()
-                        ];
-                    }
-                }
-
-                $msg = "✅ Selesai: $inserted baris berhasil, $failed baris gagal. Template kategori juga dibuat otomatis.";
+                $msg = "✅ Selesai: $inserted baris berhasil dikirim, $failed baris gagal. Cek debug di bawah.";
 
             } catch (\Exception $e) {
                 $msg = "❌ Error membaca file: " . $e->getMessage();
             }
         } else {
-            $msg = "❌ Tidak ada file yang diunggah.";
+            $msg = "⚠️ Tidak ada file yang diunggah.";
         }
 
+        // Redirect biar tidak re-post data saat refresh
         return redirect()
             ->route('dashboards.ea.broadcast.insert')
             ->with([
@@ -177,18 +151,17 @@ class BroadcastController extends Controller
     private function sendBatch($batchData, $token, $inserted, $failed, $debugData, $verify)
     {
         try {
-            // ganti insert_batch jadi insert
             $response = Http::withHeaders([
                 "Content-Type" => "application/json",
                 "token" => "Bearer $token",
-                "X-Action" => "insert"
+                "X-Action" => "insert_batch"
             ])->withOptions(['verify' => $verify])
               ->post('https://medtools.id/api/broadcast/', $batchData);
 
             $statusCode = $response->status();
             $responseData = $response->json();
 
-            if ($statusCode === 200) {
+            if ($statusCode === 200 && isset($responseData['status']) && $responseData['status'] === 'success') {
                 $inserted += count($batchData);
                 $debugData[] = [
                     'batch_status' => 'success',
@@ -206,7 +179,7 @@ class BroadcastController extends Controller
         } catch (\Exception $e) {
             $failed += count($batchData);
             $debugData[] = [
-                'batch_status' => 'error',
+                'batch_status' => 'failed',
                 'error' => $e->getMessage()
             ];
         }

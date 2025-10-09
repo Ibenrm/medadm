@@ -113,7 +113,7 @@
 <body>
 
     <div class="navbar">
-        <div class="logo">📢 BROADCAST | INSERT</div>
+        <div class="logo">📢 BROADCAST WHATSAPP | INSERT</div>
         <a href="{{ route('dashboards.ea.broadcast.insert') }}" class="{{ request()->routeIs('dashboards.ea.broadcast.insert') ? 'active' : '' }}">Insert</a>
         <a href="{{ route('dashboards.ea.broadcast.list') }}" class="{{ request()->routeIs('dashboards.ea.broadcast.list') ? 'active' : '' }}">List</a>
         <a href="{{ route('dashboard.ea') }}" class="logout">Dashboard</a>
